@@ -285,7 +285,7 @@ module Athenai
           expect(logger).to have_received(:info).with('Saved first processed query execution ID: "q00"')
         end
 
-        context 'when the state key does not exist' do
+        context 'and the state key does not exist' do
           let :state_contents do
             nil
           end
@@ -314,6 +314,21 @@ module Athenai
           it 'retains that data when it saves the state back' do
             handler.save_history
             expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json.gz', body: JSON.dump('last_query_execution_id' => 'q00', 'something' => 'else'))
+          end
+        end
+
+        context 'and there are more query executions than the batch size' do
+          let :state_contents do
+            {'last_query_execution_id' => 'qff'}
+          end
+
+          let :query_execution_ids do
+            Array.new(211) { |i| format('q%02x', i) }
+          end
+
+          it 'only stores the state once' do
+            handler.save_history
+            expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/other/prefix/key.json')).once
           end
         end
       end

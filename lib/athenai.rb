@@ -17,6 +17,7 @@ module Athenai
       @batch_size = batch_size
       @logger = logger
       @last_query_execution_id = nil
+      @state_saved = false
     end
 
     def self.handler(event:, context:)
@@ -55,9 +56,8 @@ module Athenai
               if ids.size == MAX_GET_QUERY_EXECUTION_BATCH_SIZE
                 query_executions.concat(load_query_execution_metadata(ids))
                 if query_executions.size >= @batch_size
-                  save_query_execution_metadata(query_executions).tap do |first_query_execution|
-                    save_state(first_query_execution)
-                  end
+                  save_query_execution_metadata(query_executions)
+                  save_state(first_query_execution_id)
                   query_executions = []
                 end
                 ids = []
@@ -70,9 +70,8 @@ module Athenai
         query_executions.concat(load_query_execution_metadata(ids))
       end
       unless query_executions.empty?
-        save_query_execution_metadata(query_executions).tap do |first_query_execution|
-          save_state(first_query_execution)
-        end
+        save_query_execution_metadata(query_executions)
+        save_state(first_query_execution_id)
       end
       @logger.info('Done')
       first_query_execution_id
@@ -134,13 +133,14 @@ module Athenai
       key
     end
 
-    private def save_state(first_query_execution)
-      if @state_uri
+    private def save_state(first_query_execution_id)
+      if @state_uri && !@state_saved
         @logger.debug(format('Saving state to %s', @state_uri))
         state_bucket, state_key = split_s3_uri(@state_uri)
-        body = JSON.dump(@state.merge('last_query_execution_id' => first_query_execution.query_execution_id))
+        body = JSON.dump(@state.merge('last_query_execution_id' => first_query_execution_id))
         @s3_client.put_object(bucket: state_bucket, key: state_key, body: body)
-        @logger.info(format('Saved first processed query execution ID: "%s"', first_query_execution.query_execution_id))
+        @logger.info(format('Saved first processed query execution ID: "%s"', first_query_execution_id))
+        @state_saved = true
       end
     end
 
