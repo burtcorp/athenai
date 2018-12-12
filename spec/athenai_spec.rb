@@ -242,7 +242,7 @@ module Athenai
 
       context 'when given a state key' do
         let :state_uri do
-          's3://state/some/other/prefix/key.json.gz'
+          's3://state/some/other/prefix/key.json'
         end
 
         let :state_contents do
@@ -270,18 +270,18 @@ module Athenai
 
         it 'stores the first query execution ID in an object at the specified URI' do
           handler.save_history
-          expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json.gz', body: JSON.dump('last_query_execution_id' => 'q00'))
+          expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: JSON.dump('last_query_execution_id' => 'q00'))
         end
 
         it 'logs when it loads the state' do
           handler.save_history
-          expect(logger).to have_received(:debug).with('Loading state from s3://state/some/other/prefix/key.json.gz')
+          expect(logger).to have_received(:debug).with('Loading state from s3://state/some/other/prefix/key.json')
           expect(logger).to have_received(:info).with('Loaded last query execution ID: "q03"')
         end
 
         it 'logs when it stores the state' do
           handler.save_history
-          expect(logger).to have_received(:debug).with('Saving state to s3://state/some/other/prefix/key.json.gz')
+          expect(logger).to have_received(:debug).with('Saving state to s3://state/some/other/prefix/key.json')
           expect(logger).to have_received(:info).with('Saved first processed query execution ID: "q00"')
         end
 
@@ -297,12 +297,12 @@ module Athenai
 
           it 'still stores the first query execution ID' do
             handler.save_history
-            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json.gz', body: JSON.dump('last_query_execution_id' => 'q00'))
+            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: JSON.dump('last_query_execution_id' => 'q00'))
           end
 
           it 'logs that it did not find any state' do
             handler.save_history
-            expect(logger).to have_received(:warn).with('No state found at s3://state/some/other/prefix/key.json.gz')
+            expect(logger).to have_received(:warn).with('No state found at s3://state/some/other/prefix/key.json')
           end
         end
 
@@ -313,7 +313,7 @@ module Athenai
 
           it 'retains that data when it saves the state back' do
             handler.save_history
-            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json.gz', body: JSON.dump('last_query_execution_id' => 'q00', 'something' => 'else'))
+            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: JSON.dump('last_query_execution_id' => 'q00', 'something' => 'else'))
           end
         end
 
