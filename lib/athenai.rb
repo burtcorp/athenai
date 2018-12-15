@@ -35,33 +35,27 @@ module Athenai
       handler.save_history
     end
 
-    private def split_s3_uri(uri)
-      uri.scan(%r{\As3://([^/]+)/(.+)\z}).first
-    end
-
     def save_history
       load_state
       ids = []
       query_executions = []
       first_query_execution_id = nil
       catch :done do
-        @athena_client.list_query_executions.each do |response|
-          response.query_execution_ids.each do |query_execution_id|
-            if query_execution_id == @last_query_execution_id
-              @logger.info('Found the last previously processed query execution ID')
-              throw :done
-            else
-              first_query_execution_id ||= query_execution_id
-              ids << query_execution_id
-              if ids.size == MAX_GET_QUERY_EXECUTION_BATCH_SIZE
-                query_executions.concat(load_query_execution_metadata(ids))
-                if query_executions.size >= @batch_size
-                  save_query_execution_metadata(query_executions)
-                  save_state(first_query_execution_id)
-                  query_executions = []
-                end
-                ids = []
+        each_query_execution_id do |query_execution_id|
+          if query_execution_id == @last_query_execution_id
+            @logger.info('Found the last previously processed query execution ID')
+            throw :done
+          else
+            first_query_execution_id ||= query_execution_id
+            ids << query_execution_id
+            if ids.size == MAX_GET_QUERY_EXECUTION_BATCH_SIZE
+              query_executions.concat(load_query_execution_metadata(ids))
+              if query_executions.size >= @batch_size
+                save_query_execution_metadata(query_executions)
+                save_state(first_query_execution_id)
+                query_executions = []
               end
+              ids = []
             end
           end
         end
@@ -77,6 +71,10 @@ module Athenai
       first_query_execution_id
     end
 
+    private def split_s3_uri(uri)
+      uri.scan(%r{\As3://([^/]+)/(.+)\z}).first
+    end
+
     private def load_state
       if @state_uri
         begin
@@ -89,6 +87,19 @@ module Athenai
         rescue Aws::S3::Errors::NoSuchKey
           @state = {}
           @logger.warn(format('No state found at %s', @state_uri))
+        end
+      end
+    end
+
+    private def each_query_execution_id(&block)
+      next_token = nil
+      loop do
+        response = @athena_client.list_query_executions(next_token: next_token)
+        response.query_execution_ids.each(&block)
+        if (t = response.next_token)
+          next_token = t
+        else
+          break
         end
       end
     end

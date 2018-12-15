@@ -13,11 +13,18 @@ module Athenai
 
     let :athena_client do
       Aws::Athena::Client.new(stub_responses: true).tap do |ac|
-        responses = [
-          ac.stub_data(:list_query_executions, query_execution_ids: query_execution_ids.take((query_execution_ids.size * 0.6).to_i)),
-          ac.stub_data(:list_query_executions, query_execution_ids: query_execution_ids.drop((query_execution_ids.size * 0.6).to_i)),
+        batches = [
+          query_execution_ids.take((query_execution_ids.size * 0.6).to_i),
+          query_execution_ids.drop((query_execution_ids.size * 0.6).to_i),
         ]
-        allow(ac).to receive(:list_query_executions).and_return(responses)
+        allow(ac).to receive(:list_query_executions) do |parameters|
+          if (token = parameters[:next_token])
+            i = batches.index { |b| b.first == token }
+            ac.stub_data(:list_query_executions, query_execution_ids: batches[i], next_token: batches[i + 1]&.first)
+          else
+            ac.stub_data(:list_query_executions, query_execution_ids: batches[0], next_token: batches[1].first)
+          end
+        end
         allow(ac).to receive(:batch_get_query_execution) do |parameters|
           query_executions = parameters[:query_execution_ids].map do |id|
             {
@@ -95,7 +102,7 @@ module Athenai
 
       it 'initializes the handler with its dependencies and calls #save_history' do
         described_class.handler(event: nil, context: nil)
-        expect(athena_client).to have_received(:list_query_executions)
+        expect(athena_client).to have_received(:list_query_executions).at_least(:once)
       end
 
       it 'returns whatever #save_history returns' do
@@ -116,7 +123,7 @@ module Athenai
     describe '#save_history' do
       it 'lists the query executions' do
         handler.save_history
-        expect(athena_client).to have_received(:list_query_executions)
+        expect(athena_client).to have_received(:list_query_executions).at_least(:once)
       end
 
       it 'looks up the query executions' do
