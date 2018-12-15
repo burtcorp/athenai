@@ -4,7 +4,7 @@ module Athenai
       described_class.new(
         athena_client: athena_client,
         s3_client: s3_client,
-        history_base_uri: 's3://athena-query-history/some/prefix/',
+        history_base_uri: history_base_uri,
         state_uri: state_uri,
         batch_size: 100,
         sleep_service: sleep_service,
@@ -77,6 +77,10 @@ module Athenai
 
     let :query_execution_ids do
       Array.new(11) { |i| format('q%02x', i) }
+    end
+
+    let :history_base_uri do
+      's3://athena-query-history/some/prefix/'
     end
 
     let :state_uri do
@@ -205,6 +209,16 @@ module Athenai
 
       it 'returns the first processed query execution ID' do
         expect(handler.save_history).to eq('q00')
+      end
+
+      context 'when no history URI has been specified' do
+        let :history_base_uri do
+          nil
+        end
+
+        it 'raises an error' do
+          expect { handler.save_history }.to raise_error(ArgumentError, 'No history base URI specified')
+        end
       end
 
       context 'when there are more than 50 query executions' do

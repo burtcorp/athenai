@@ -10,6 +10,9 @@ module Athenai
     MAX_GET_QUERY_EXECUTION_BATCH_SIZE = 50
 
     def initialize(athena_client:, s3_client:, history_base_uri:, batch_size: 10_000, state_uri: nil, sleep_service: Kernel, logger: nil)
+      unless history_base_uri
+        raise ArgumentError, 'No history base URI specified'
+      end
       @athena_client = athena_client
       @s3_client = s3_client
       @history_base_uri = history_base_uri
