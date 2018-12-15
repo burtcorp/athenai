@@ -30,14 +30,22 @@ module Athenai
             {
               query_execution_id: id,
               status: {
-                submission_date_time: Time.utc(2018, 12, 11, 10, 9, 8),
-                completion_date_time: Time.utc(2018, 12, 11, 10, 9, 8),
+                submission_date_time: submission_date_time,
+                completion_date_time: completion_date_time,
               },
             }
           end
           ac.stub_data(:batch_get_query_execution, query_executions: query_executions)
         end
       end
+    end
+
+    let :submission_date_time do
+      Time.utc(2018, 12, 11, 10, 9, 8)
+    end
+
+    let :completion_date_time do
+      Time.utc(2018, 12, 11, 10, 9, 8)
     end
 
     let :s3_client do
@@ -337,6 +345,18 @@ module Athenai
             handler.save_history
             expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/other/prefix/key.json')).once
           end
+        end
+      end
+
+      context 'when a query does not have a completion time' do
+        let :completion_date_time do
+          nil
+        end
+
+        it 'doesn\'t attempt to format it' do
+          handler.save_history
+          expect(saved_executions.first.dig('status', 'submission_date_time')).to eq('2018-12-11 10:09:08.000')
+          expect(saved_executions.first.dig('status', 'completion_date_time')).to be_nil
         end
       end
     end

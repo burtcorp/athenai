@@ -120,12 +120,12 @@ module Athenai
       query_executions.each do |query_execution|
         h = query_execution.to_h
         s = h.dig(:status, :submission_date_time).dup.utc
-        c = h.dig(:status, :completion_date_time).dup.utc
+        c = h.dig(:status, :completion_date_time).dup&.utc
         h = h.merge(
           region: region,
           status: h[:status].merge(
             submission_date_time: s.strftime('%F %T.%L'),
-            completion_date_time: c.strftime('%F %T.%L'),
+            completion_date_time: c&.strftime('%F %T.%L'),
           ),
         )
         zio.puts(JSON.dump(h))
