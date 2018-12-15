@@ -9,12 +9,13 @@ module Athenai
   class SaveHistory
     MAX_GET_QUERY_EXECUTION_BATCH_SIZE = 50
 
-    def initialize(athena_client:, s3_client:, history_base_uri:, batch_size: 10_000, state_uri: nil, logger: nil)
+    def initialize(athena_client:, s3_client:, history_base_uri:, batch_size: 10_000, state_uri: nil, sleep_service: Kernel, logger: nil)
       @athena_client = athena_client
       @s3_client = s3_client
       @history_base_uri = history_base_uri
       @state_uri = state_uri
       @batch_size = batch_size
+      @sleep_service = sleep_service
       @logger = logger
       @last_query_execution_id = nil
       @state_saved = false
@@ -94,7 +95,9 @@ module Athenai
     private def each_query_execution_id(&block)
       next_token = nil
       loop do
-        response = @athena_client.list_query_executions(next_token: next_token)
+        response =  retry_throttling do
+          @athena_client.list_query_executions(next_token: next_token)
+        end
         response.query_execution_ids.each(&block)
         if (t = response.next_token)
           next_token = t
@@ -104,9 +107,22 @@ module Athenai
       end
     end
 
+    private def retry_throttling
+      attempts = 0
+      begin
+        attempts += 1
+        yield
+      rescue Aws::Athena::Errors::ThrottlingException
+        @sleep_service.sleep([2**(attempts - 1), 16].min)
+        retry
+      end
+    end
+
     private def load_query_execution_metadata(query_execution_ids)
       @logger.debug(format('Loading query execution metadata for %d query executions', query_execution_ids.size))
-      response = @athena_client.batch_get_query_execution(query_execution_ids: query_execution_ids)
+      response = retry_throttling do
+        @athena_client.batch_get_query_execution(query_execution_ids: query_execution_ids)
+      end
       if (last = response.query_executions.last)
         time = last.status.submission_date_time.dup.utc
         @logger.debug(time.strftime('Last submission time of the batch was %F %T %Z'))

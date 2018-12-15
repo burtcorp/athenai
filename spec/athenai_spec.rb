@@ -7,6 +7,7 @@ module Athenai
         history_base_uri: 's3://athena-query-history/some/prefix/',
         state_uri: state_uri,
         batch_size: 100,
+        sleep_service: sleep_service,
         logger: logger,
       )
     end
@@ -84,6 +85,10 @@ module Athenai
 
     let :state_contents do
       nil
+    end
+
+    let :sleep_service do
+      double(:sleep_service, sleep: nil)
     end
 
     let :logger do
@@ -357,6 +362,46 @@ module Athenai
           handler.save_history
           expect(saved_executions.first.dig('status', 'submission_date_time')).to eq('2018-12-11 10:09:08.000')
           expect(saved_executions.first.dig('status', 'completion_date_time')).to be_nil
+        end
+      end
+
+      context 'when an API call raises a throttling error' do
+        let :athena_client do
+          super().tap do |ac|
+            list_attempts = 0
+            allow(ac).to receive(:list_query_executions) do
+              list_attempts += 1
+              if list_attempts < 8
+                raise Aws::Athena::Errors::ThrottlingException.new(nil, nil)
+              else
+                ac.stub_data(:list_query_executions, query_execution_ids: query_execution_ids)
+              end
+            end
+            get_attempts = 0
+            allow(ac).to receive(:batch_get_query_execution) do
+              get_attempts += 1
+              if get_attempts < 3
+                raise Aws::Athena::Errors::ThrottlingException.new(nil, nil)
+              else
+                ac.stub_data(:batch_get_query_execution)
+              end
+            end
+          end
+        end
+
+        it 'tries again' do
+          handler.save_history
+          expect(athena_client).to have_received(:list_query_executions).exactly(8).times
+          expect(athena_client).to have_received(:batch_get_query_execution).exactly(3).times
+        end
+
+        it 'backs off on each attempt, up to a max duration' do
+          sleep_durations = []
+          allow(sleep_service).to receive(:sleep) do |n|
+            sleep_durations << n
+          end
+          handler.save_history
+          expect(sleep_durations).to eq([1, 2, 4, 8, 16, 16, 16, 1, 2])
         end
       end
     end
