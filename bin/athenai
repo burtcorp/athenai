@@ -1,6 +1,13 @@
-$: << File.expand_path('../lib', __dir__)
+#!/usr/bin/env ruby
+
+$LOAD_PATH << File.expand_path('../lib', __dir__)
 
 require 'bundler/setup'
 require 'athenai'
 
-Athenai::SaveHistory.handler(event: nil, context: nil)
+case ARGV.first
+when 'save-history'
+  Athenai::SaveHistory.handler(event: nil, context: nil)
+else
+  exit(1)
+end

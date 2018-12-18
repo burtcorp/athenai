@@ -24,3 +24,4 @@ COPY . /usr/app/
 
 USER worker
 ENTRYPOINT ["/sbin/tini", "--", "./bin/athenai"]
+CMD ["save-history"]
