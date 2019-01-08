@@ -25,8 +25,8 @@ module Athenai
     end
 
     def self.handler(event:, context:)
-      athena_client = Aws::Athena::Client.new
-      s3_client = Aws::S3::Client.new
+      athena_client = Aws::Athena::Client.new(region: ENV['AWS_REGION'])
+      s3_client = Aws::S3::Client.new(region: ENV['AWS_REGION'])
       logger = Logger.new($stderr)
       logger.level = Logger::DEBUG
       handler = new(
