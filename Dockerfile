@@ -20,7 +20,8 @@ WORKDIR /usr/app
 
 RUN bundle install --without test
 
-COPY . /usr/app/
+COPY bin /usr/app/bin
+COPY lib /usr/app/lib
 
 USER worker
 ENTRYPOINT ["/sbin/tini", "--", "./bin/athenai"]
