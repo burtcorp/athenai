@@ -2,6 +2,7 @@ require 'logger'
 require 'time'
 require 'zlib'
 require 'stringio'
+require 'uri'
 require 'aws-sdk-athena'
 require 'aws-sdk-s3'
 
@@ -15,8 +16,8 @@ module Athenai
       end
       @athena_client = athena_client
       @s3_client_factory = s3_client_factory
-      @history_base_uri = history_base_uri
-      @state_uri = state_uri
+      @history_base_uri = URI(history_base_uri)
+      @state_uri = state_uri && URI(state_uri)
       @batch_size = batch_size
       @sleep_service = sleep_service
       @logger = logger
@@ -75,29 +76,24 @@ module Athenai
       first_query_execution_id
     end
 
-    private def split_s3_uri(uri)
-      uri.scan(%r{\As3://([^/]+)/(.+)\z}).first
-    end
-
     private def create_s3_client(bucket)
       region = @s3_client_factory.new.get_bucket_location(bucket: bucket).location_constraint
       @s3_client_factory.new(region: region)
     end
 
     private def state_s3_client
-      @state_s3_client ||= create_s3_client(split_s3_uri(@state_uri).first)
+      @state_s3_client ||= create_s3_client(@state_uri.host)
     end
 
     private def history_s3_client
-      @history_s3_client ||= create_s3_client(split_s3_uri(@history_base_uri).first)
+      @history_s3_client ||= create_s3_client(@history_base_uri.host)
     end
 
     private def load_state
       if @state_uri
         begin
           @logger.debug(format('Loading state from %s', @state_uri))
-          state_bucket, state_key = split_s3_uri(@state_uri)
-          response = state_s3_client.get_object(bucket: state_bucket, key: state_key)
+          response = state_s3_client.get_object(bucket: @state_uri.host, key: @state_uri.path[1..-1])
           @state = JSON.load(response.body)
           @last_query_execution_id = @state['last_query_execution_id']
           @logger.info(format('Loaded last query execution ID: "%s"', @last_query_execution_id))
@@ -179,9 +175,8 @@ module Athenai
     private def save_state(first_query_execution_id)
       if @state_uri && !@state_saved
         @logger.debug(format('Saving state to %s', @state_uri))
-        state_bucket, state_key = split_s3_uri(@state_uri)
         body = JSON.dump(@state.merge('last_query_execution_id' => first_query_execution_id))
-        state_s3_client.put_object(bucket: state_bucket, key: state_key, body: body)
+        state_s3_client.put_object(bucket: @state_uri.host, key: @state_uri.path[1..-1], body: body)
         @logger.info(format('Saved first processed query execution ID: "%s"', first_query_execution_id))
         @state_saved = true
       end
@@ -190,10 +185,9 @@ module Athenai
     private def save_query_execution_metadata(query_executions)
       first_query_execution = query_executions.first
       body = create_metadata_log_contents(query_executions)
-      history_bucket, history_prefix = split_s3_uri(@history_base_uri)
-      key = create_metadata_log_key(history_prefix, first_query_execution)
-      @logger.debug(format('Saving execution metadata for %d queries to s3://%s/%s', query_executions.size, history_bucket, key))
-      history_s3_client.put_object(bucket: history_bucket, key: key, body: body)
+      key = create_metadata_log_key(@history_base_uri.path[1..-1], first_query_execution)
+      @logger.debug(format('Saving execution metadata for %d queries to s3://%s/%s', query_executions.size, @history_base_uri.host, key))
+      history_s3_client.put_object(bucket: @history_base_uri.host, key: key, body: body)
       @logger.info(format('Saved execution metadata for %d queries', query_executions.size))
       first_query_execution
     end
