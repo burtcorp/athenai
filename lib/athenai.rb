@@ -78,6 +78,8 @@ module Athenai
 
     private def create_s3_client(bucket)
       region = @s3_client_factory.new.get_bucket_location(bucket: bucket).location_constraint
+      region = 'us-east-1' if region.empty?
+      @logger.debug(format('Detected region of bucket %s as %s', bucket, region))
       @s3_client_factory.new(region: region)
     end
 

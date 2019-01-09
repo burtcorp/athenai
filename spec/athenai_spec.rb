@@ -151,9 +151,14 @@ module Athenai
     end
 
     describe '#save_history' do
-      it 'looks up the region for the history URIs and creates an S3 client for that region' do
+      it 'looks up the region of the history URI\'s bucket and creates an S3 client for that region' do
         handler.save_history
         expect(s3_client_factory).to have_received(:new).with(region: 'hi-story-3')
+      end
+
+      it 'logs the region it detects for the bucket' do
+        handler.save_history
+        expect(logger).to have_received(:debug).with('Detected region of bucket athena-query-history as hi-story-3')
       end
 
       it 'lists the query executions' do
@@ -439,6 +444,21 @@ module Athenai
           end
           handler.save_history
           expect(sleep_durations).to eq([1, 2, 4, 8, 16, 16, 16, 1, 2])
+        end
+      end
+
+      context 'when a bucket is located in us-east-1' do
+        let :s3_client do
+          super().tap do |sc|
+            allow(sc).to receive(:get_bucket_location) do |parameters|
+              sc.stub_data(:get_bucket_location, location_constraint: '')
+            end
+          end
+        end
+
+        it 'converts the empty location constrainet returned by GetBucketLocation to "us-east-1"' do
+          handler.save_history
+          expect(s3_client_factory).to have_received(:new).with(region: 'us-east-1')
         end
       end
     end
