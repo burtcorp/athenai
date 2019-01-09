@@ -3,7 +3,7 @@ module Athenai
     subject :handler do
       described_class.new(
         athena_client: athena_client,
-        s3_client: s3_client,
+        s3_client_factory: s3_client_factory,
         history_base_uri: history_base_uri,
         state_uri: state_uri,
         batch_size: 100,
@@ -49,8 +49,21 @@ module Athenai
       Time.utc(2018, 12, 11, 10, 9, 8)
     end
 
+    let :s3_client_factory do
+      class_double(Aws::S3::Client, new: s3_client)
+    end
+
     let :s3_client do
       Aws::S3::Client.new(stub_responses: true).tap do |sc|
+        allow(sc).to receive(:get_bucket_location) do |parameters|
+          if parameters[:bucket] == URI(history_base_uri).host
+            sc.stub_data(:get_bucket_location, location_constraint: 'hi-story-3')
+          elsif state_uri && parameters[:bucket] == URI(state_uri).host
+            sc.stub_data(:get_bucket_location, location_constraint: 'st-ate-9')
+          else
+            sc.stub_data(:get_bucket_location, location_constraint: 'no-region-1')
+          end
+        end
         allow(sc).to receive(:put_object) do |parameters|
           if parameters[:key].start_with?('some/prefix/')
             zio = Zlib::GzipReader.new(StringIO.new(parameters[:body]))
@@ -138,6 +151,11 @@ module Athenai
     end
 
     describe '#save_history' do
+      it 'looks up the region for the history URIs and creates an S3 client for that region' do
+        handler.save_history
+        expect(s3_client_factory).to have_received(:new).with(region: 'hi-story-3')
+      end
+
       it 'lists the query executions' do
         handler.save_history
         expect(athena_client).to have_received(:list_query_executions).at_least(:once)
@@ -281,6 +299,11 @@ module Athenai
 
         let :state_contents do
           {'last_query_execution_id' => 'q03'}
+        end
+
+        it 'looks up the region for the history URIs and creates an S3 client for that region' do
+          handler.save_history
+          expect(s3_client_factory).to have_received(:new).with(region: 'st-ate-9')
         end
 
         it 'attempts to load the last query execution ID from the given key in the history bucket' do
