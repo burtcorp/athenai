@@ -12,7 +12,7 @@ You can run Athenai from a checkout, like this:
 
 ```shell
 $ bundle install
-$ HISTORY_BASE_URI=s3://my-athena-history/data/ -e STATE_URI=s3://my-athena-history/state.json bundle exec bin/athenai save-history
+$ HISTORY_BASE_URI=s3://my-athena-history/data/ STATE_URI=s3://my-athena-history/state.json bundle exec bin/athenai save-history
 ```
 
 or with Docker, like this:
