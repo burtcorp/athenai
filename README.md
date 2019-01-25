@@ -28,3 +28,7 @@ You run the tests with:
 ```shell
 $ bundle exec rake spec
 ```
+
+# Copyright
+
+© 2019 Burt AB, see LICENSE.txt (BSD 3-Clause).
