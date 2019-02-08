@@ -166,9 +166,10 @@ module Athenai
     private def create_metadata_log_key(prefix, first_query_execution)
       key = prefix.dup
       key << '/' unless key.end_with?('/')
+      key << 'region='
       key << @athena_client.config.region
-      key << '/'
-      key << first_query_execution.status.submission_date_time.strftime('%Y/%m/%d/%H/')
+      key << '/month='
+      key << first_query_execution.status.submission_date_time.strftime('%Y-%m-01/')
       key << first_query_execution.query_execution_id
       key << '.json.gz'
       key

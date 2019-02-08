@@ -181,9 +181,9 @@ module Athenai
         expect(logger).to have_received(:debug).with('Last submission time of the batch was 2018-12-11 10:09:08 UTC')
       end
 
-      it 'stores the query execution metadata in a key that contains the region, submission date time, and ID of the first processed query execution ID' do
+      it 'stores the query execution metadata in a key that contains the region, the month it was submitted, and ID of the first processed query execution ID' do
         handler.save_history
-        expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/us-stubbed-1/2018/12/11/10/q00.json.gz'))
+        expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/q00.json.gz'))
       end
 
       it 'stores the query execution metadata on S3 in the specified bucket and prefix' do
@@ -193,7 +193,7 @@ module Athenai
 
       it 'logs when it stores query execution metadata' do
         handler.save_history
-        expect(logger).to have_received(:debug).with('Saving execution metadata for 11 queries to s3://athena-query-history/some/prefix/us-stubbed-1/2018/12/11/10/q00.json.gz')
+        expect(logger).to have_received(:debug).with('Saving execution metadata for 11 queries to s3://athena-query-history/some/prefix/region=us-stubbed-1/month=2018-12-01/q00.json.gz')
         expect(logger).to have_received(:info).with('Saved execution metadata for 11 queries')
       end
 
@@ -273,11 +273,11 @@ module Athenai
           Array.new(211) { |i| format('q%02x', i) }
         end
 
-        it 'stores the query executions one batch at a time at a time' do
+        it 'stores the query executions one batch at a time' do
           handler.save_history
-          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/us-stubbed-1/2018/12/11/10/q00.json.gz'))
-          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/us-stubbed-1/2018/12/11/10/q64.json.gz'))
-          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/us-stubbed-1/2018/12/11/10/qc8.json.gz'))
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/q00.json.gz'))
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/q64.json.gz'))
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/qc8.json.gz'))
           expect(saved_executions.size).to eq(211)
         end
       end
