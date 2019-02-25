@@ -21,8 +21,8 @@ module Athenai
       @batch_size = batch_size
       @sleep_service = sleep_service
       @logger = logger
-      @last_query_execution_id = nil
-      @state_saved = false
+      @last_query_execution_id_by_workgroup = {}
+      @saved_state = nil
     end
 
     def self.handler(event:, context:)
@@ -57,7 +57,7 @@ module Athenai
       query_executions = []
       catch :done do
         each_query_execution_id(work_group) do |query_execution_id|
-          if query_execution_id == @last_query_execution_id
+          if query_execution_id == @last_query_execution_id_by_workgroup[work_group.name]
             @logger.info(format('Found the last previously processed query execution ID for work group "%s"', work_group.name))
             throw :done
           else
@@ -106,8 +106,15 @@ module Athenai
           @logger.debug(format('Loading state from %s', @state_uri))
           response = state_s3_client.get_object(bucket: @state_uri.host, key: @state_uri.path[1..-1])
           @state = JSON.load(response.body)
-          @last_query_execution_id = @state.dig('work_groups', 'primary', 'last_query_execution_id') || @state.delete('last_query_execution_id')
-          @logger.info(format('Loaded last query execution ID: "%s"', @last_query_execution_id))
+          if @state.key?('last_query_execution_id')
+            last_query_execution_id = @state.delete('last_query_execution_id')
+            @state['work_groups'] = {'primary' => {'last_query_execution_id' => last_query_execution_id}}
+          end
+          @state['work_groups'].each do |work_group_name, work_group_state|
+            last_query_execution_id = work_group_state['last_query_execution_id']
+            @last_query_execution_id_by_workgroup[work_group_name] = last_query_execution_id
+            @logger.info(format('Loaded last query execution ID for work group "%s": "%s"', work_group_name, last_query_execution_id))
+          end
         rescue Aws::S3::Errors::NoSuchKey
           @state = {}
           @logger.warn(format('No state found at %s', @state_uri))
@@ -203,19 +210,21 @@ module Athenai
     end
 
     private def save_state(first_query_execution_id_by_workgroup)
-      if @state_uri && !@state_saved
-        @logger.debug(format('Saving state to %s', @state_uri))
+      if @state_uri
         @state['work_groups'] ||= {}
         first_query_execution_id_by_workgroup.each do |work_group, query_execution_id|
           @state['work_groups'][work_group] ||= {}
           @state['work_groups'][work_group]['last_query_execution_id'] = query_execution_id
         end
-        body = JSON.dump(@state)
-        state_s3_client.put_object(bucket: @state_uri.host, key: @state_uri.path[1..-1], body: body)
-        first_query_execution_id_by_workgroup.each do |work_group, query_execution_id|
-          @logger.info(format('Saved first processed query execution ID for work group "%s": "%s"', work_group, query_execution_id))
+        if @saved_state != @state
+          @logger.debug(format('Saving state to %s', @state_uri))
+          body = JSON.dump(@state)
+          state_s3_client.put_object(bucket: @state_uri.host, key: @state_uri.path[1..-1], body: body)
+          first_query_execution_id_by_workgroup.each do |work_group, query_execution_id|
+            @logger.info(format('Saved first processed query execution ID for work group "%s": "%s"', work_group, query_execution_id))
+          end
+          @saved_state = JSON.load(body)
         end
-        @state_saved = true
       end
     end
 

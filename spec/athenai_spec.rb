@@ -369,8 +369,22 @@ module Athenai
           {
             'work_groups' => {
               'primary' => {'last_query_execution_id' => 'q03'},
-              'secondary' => {'last_query_execution_id' => 'q09'},
+              'secondary' => {'last_query_execution_id' => 'q22'},
             },
+          }
+        end
+
+        let :work_groups do
+          [
+            {name: 'primary'},
+            {name: 'secondary'},
+          ]
+        end
+
+        let :query_execution_ids do
+          {
+            'primary' => Array.new(11) { |i| format('q%02x', i) },
+            'secondary' => Array.new(11) { |i| format('q%02x', i + 32) },
           }
         end
 
@@ -381,7 +395,7 @@ module Athenai
 
         it 'attempts to load the last query execution ID from the given key in the history bucket' do
           handler.save_history
-          expect(saved_executions.size).to eq(3)
+          expect(saved_executions.size).to eq(5)
         end
 
         it 'loads query execution metadata until it finds the last query execution ID given by the state' do
@@ -390,7 +404,15 @@ module Athenai
             hash_including('query_execution_id' => 'q00'),
             hash_including('query_execution_id' => 'q01'),
             hash_including('query_execution_id' => 'q02'),
+            hash_including('query_execution_id' => 'q20'),
+            hash_including('query_execution_id' => 'q21'),
           )
+        end
+
+        it 'logs the last query execution ID of each work group' do
+          handler.save_history
+          expect(logger).to have_received(:info).with('Loaded last query execution ID for work group "primary": "q03"')
+          expect(logger).to have_received(:info).with('Loaded last query execution ID for work group "secondary": "q22"')
         end
 
         it 'logs when it finds the last query execution ID' do
@@ -399,23 +421,28 @@ module Athenai
         end
 
         it 'stores the first query execution IDs per work group in an object at the specified URI' do
+          last_saved_state = nil
+          allow(s3_client).to receive(:put_object) do |parameters|
+            if parameters[:bucket] == 'state' && parameters[:key] == 'some/other/prefix/key.json'
+              last_saved_state = JSON.load(parameters[:body])
+            end
+          end
           handler.save_history
-          expected_body = JSON.dump('work_groups' => {
+          expect(last_saved_state['work_groups']).to include(
             'primary' => {'last_query_execution_id' => 'q00'},
-            'secondary' => {'last_query_execution_id' => 'q09'},
-          })
-          expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: expected_body)
+            'secondary' => {'last_query_execution_id' => 'q20'},
+          )
         end
 
         it 'logs when it loads the state' do
           handler.save_history
           expect(logger).to have_received(:debug).with('Loading state from s3://state/some/other/prefix/key.json')
-          expect(logger).to have_received(:info).with('Loaded last query execution ID: "q03"')
+          expect(logger).to have_received(:info).with('Loaded last query execution ID for work group "primary": "q03"')
         end
 
         it 'logs when it stores the state' do
           handler.save_history
-          expect(logger).to have_received(:debug).with('Saving state to s3://state/some/other/prefix/key.json')
+          expect(logger).to have_received(:debug).with('Saving state to s3://state/some/other/prefix/key.json').at_least(:once)
           expect(logger).to have_received(:info).with('Saved first processed query execution ID for work group "primary": "q00"')
         end
 
@@ -452,7 +479,7 @@ module Athenai
 
           it 'acts as if the last query execution ID was nil' do
             handler.save_history
-            expect(saved_executions.size).to eq(11)
+            expect(saved_executions.size).to eq(22)
           end
 
           it 'still stores the first query execution ID' do
@@ -503,9 +530,9 @@ module Athenai
             )
           end
 
-          it 'only stores the state once' do
+          it 'stores the state once per work group processed' do
             handler.save_history
-            expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/other/prefix/key.json')).once
+            expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/other/prefix/key.json')).exactly(2).times
           end
         end
       end
