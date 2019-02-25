@@ -42,22 +42,32 @@ module Athenai
 
     def save_history
       load_state
+      first_query_execution_ids = {}
+      each_work_group do |work_group|
+        @logger.debug(format('Loading query execution history for work group "%s"', work_group.name))
+        first_query_execution_ids[work_group.name] = store_work_group_history(work_group)
+      end
+      @logger.info('Done')
+      first_query_execution_ids.reject { |_, v| v.nil? }
+    end
+
+    private def store_work_group_history(work_group)
+      first_id = nil
       ids = []
       query_executions = []
-      first_query_execution_id = nil
       catch :done do
-        each_query_execution_id do |query_execution_id|
+        each_query_execution_id(work_group) do |query_execution_id|
           if query_execution_id == @last_query_execution_id
-            @logger.info('Found the last previously processed query execution ID')
+            @logger.info(format('Found the last previously processed query execution ID for work group "%s"', work_group.name))
             throw :done
           else
-            first_query_execution_id ||= query_execution_id
+            first_id ||= query_execution_id
             ids << query_execution_id
             if ids.size == MAX_GET_QUERY_EXECUTION_BATCH_SIZE
               query_executions.concat(load_query_execution_metadata(ids))
               if query_executions.size >= @batch_size
-                save_query_execution_metadata(query_executions)
-                save_state(first_query_execution_id)
+                save_query_execution_metadata(work_group, query_executions)
+                save_state(work_group.name => first_id)
                 query_executions = []
               end
               ids = []
@@ -69,11 +79,10 @@ module Athenai
         query_executions.concat(load_query_execution_metadata(ids))
       end
       unless query_executions.empty?
-        save_query_execution_metadata(query_executions)
-        save_state(first_query_execution_id)
+        save_query_execution_metadata(work_group, query_executions)
+        save_state(work_group.name => first_id)
       end
-      @logger.info('Done')
-      first_query_execution_id
+      first_id
     end
 
     private def create_s3_client(bucket)
@@ -97,7 +106,7 @@ module Athenai
           @logger.debug(format('Loading state from %s', @state_uri))
           response = state_s3_client.get_object(bucket: @state_uri.host, key: @state_uri.path[1..-1])
           @state = JSON.load(response.body)
-          @last_query_execution_id = @state['last_query_execution_id']
+          @last_query_execution_id = @state.dig('work_groups', 'primary', 'last_query_execution_id') || @state.delete('last_query_execution_id')
           @logger.info(format('Loaded last query execution ID: "%s"', @last_query_execution_id))
         rescue Aws::S3::Errors::NoSuchKey
           @state = {}
@@ -106,11 +115,26 @@ module Athenai
       end
     end
 
-    private def each_query_execution_id(&block)
+    private def each_work_group(&block)
       next_token = nil
       loop do
-        response =  retry_throttling do
-          @athena_client.list_query_executions(next_token: next_token)
+        response = retry_throttling do
+          @athena_client.list_work_groups
+        end
+        response.work_groups.each(&block)
+        if (t = response.next_token)
+          next_token = t
+        else
+          break
+        end
+      end
+    end
+
+    private def each_query_execution_id(work_group, &block)
+      next_token = nil
+      loop do
+        response = retry_throttling do
+          @athena_client.list_query_executions(work_group: work_group.name, next_token: next_token)
         end
         response.query_execution_ids.each(&block)
         if (t = response.next_token)
@@ -163,32 +187,42 @@ module Athenai
       zio.close.string
     end
 
-    private def create_metadata_log_key(prefix, first_query_execution)
+    private def create_metadata_log_key(prefix, work_group, first_query_execution)
       key = prefix.dup
       key << '/' unless key.end_with?('/')
       key << 'region='
       key << @athena_client.config.region
       key << '/month='
-      key << first_query_execution.status.submission_date_time.strftime('%Y-%m-01/')
+      key << first_query_execution.status.submission_date_time.strftime('%Y-%m-01')
+      key << '/work_group='
+      key << work_group.name
+      key << '/'
       key << first_query_execution.query_execution_id
       key << '.json.gz'
       key
     end
 
-    private def save_state(first_query_execution_id)
+    private def save_state(first_query_execution_id_by_workgroup)
       if @state_uri && !@state_saved
         @logger.debug(format('Saving state to %s', @state_uri))
-        body = JSON.dump(@state.merge('last_query_execution_id' => first_query_execution_id))
+        @state['work_groups'] ||= {}
+        first_query_execution_id_by_workgroup.each do |work_group, query_execution_id|
+          @state['work_groups'][work_group] ||= {}
+          @state['work_groups'][work_group]['last_query_execution_id'] = query_execution_id
+        end
+        body = JSON.dump(@state)
         state_s3_client.put_object(bucket: @state_uri.host, key: @state_uri.path[1..-1], body: body)
-        @logger.info(format('Saved first processed query execution ID: "%s"', first_query_execution_id))
+        first_query_execution_id_by_workgroup.each do |work_group, query_execution_id|
+          @logger.info(format('Saved first processed query execution ID for work group "%s": "%s"', work_group, query_execution_id))
+        end
         @state_saved = true
       end
     end
 
-    private def save_query_execution_metadata(query_executions)
+    private def save_query_execution_metadata(work_group, query_executions)
       first_query_execution = query_executions.first
       body = create_metadata_log_contents(query_executions)
-      key = create_metadata_log_key(@history_base_uri.path[1..-1], first_query_execution)
+      key = create_metadata_log_key(@history_base_uri.path[1..-1], work_group, first_query_execution)
       @logger.debug(format('Saving execution metadata for %d queries to s3://%s/%s', query_executions.size, @history_base_uri.host, key))
       history_s3_client.put_object(bucket: @history_base_uri.host, key: key, body: body)
       @logger.info(format('Saved execution metadata for %d queries', query_executions.size))

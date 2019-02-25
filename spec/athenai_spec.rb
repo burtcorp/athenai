@@ -14,11 +14,15 @@ module Athenai
 
     let :athena_client do
       Aws::Athena::Client.new(stub_responses: true).tap do |ac|
-        batches = [
-          query_execution_ids.take((query_execution_ids.size * 0.6).to_i),
-          query_execution_ids.drop((query_execution_ids.size * 0.6).to_i),
-        ]
+        allow(ac).to receive(:list_work_groups) do |parameters|
+          ac.stub_data(:list_work_groups, work_groups: work_groups)
+        end
         allow(ac).to receive(:list_query_executions) do |parameters|
+          ids = Array(query_execution_ids[parameters[:work_group]])
+          batches = [
+            ids.take((ids.size * 0.6).to_i),
+            ids.drop((ids.size * 0.6).to_i),
+          ]
           if (token = parameters[:next_token])
             i = batches.index { |b| b.first == token }
             ac.stub_data(:list_query_executions, query_execution_ids: batches[i], next_token: batches[i + 1]&.first)
@@ -89,7 +93,15 @@ module Athenai
     end
 
     let :query_execution_ids do
-      Array.new(11) { |i| format('q%02x', i) }
+      {
+        'primary' => Array.new(11) { |i| format('q%02x', i) },
+      }
+    end
+
+    let :work_groups do
+      [
+        {name: 'primary'},
+      ]
     end
 
     let :history_base_uri do
@@ -136,7 +148,7 @@ module Athenai
       end
 
       it 'returns whatever #save_history returns' do
-        expect(described_class.handler(event: nil, context: nil)).to eq('q00')
+        expect(described_class.handler(event: nil, context: nil)).to eq('primary' => 'q00')
       end
 
       it 'picks up the history URI from the environment' do
@@ -168,7 +180,7 @@ module Athenai
 
       it 'looks up the query executions' do
         handler.save_history
-        expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids)
+        expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids['primary'])
       end
 
       it 'logs when it loads query execution metadata' do
@@ -181,9 +193,9 @@ module Athenai
         expect(logger).to have_received(:debug).with('Last submission time of the batch was 2018-12-11 10:09:08 UTC')
       end
 
-      it 'stores the query execution metadata in a key that contains the region, the month it was submitted, and ID of the first processed query execution ID' do
+      it 'stores the query execution metadata in a key that contains the region, the month it was submitted, work group, and ID of the first processed query execution ID' do
         handler.save_history
-        expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/q00.json.gz'))
+        expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/work_group=primary/q00.json.gz'))
       end
 
       it 'stores the query execution metadata on S3 in the specified bucket and prefix' do
@@ -193,7 +205,7 @@ module Athenai
 
       it 'logs when it stores query execution metadata' do
         handler.save_history
-        expect(logger).to have_received(:debug).with('Saving execution metadata for 11 queries to s3://athena-query-history/some/prefix/region=us-stubbed-1/month=2018-12-01/q00.json.gz')
+        expect(logger).to have_received(:debug).with('Saving execution metadata for 11 queries to s3://athena-query-history/some/prefix/region=us-stubbed-1/month=2018-12-01/work_group=primary/q00.json.gz')
         expect(logger).to have_received(:info).with('Saved execution metadata for 11 queries')
       end
 
@@ -230,8 +242,53 @@ module Athenai
         expect(logger).to have_received(:info).with('Done')
       end
 
-      it 'returns the first processed query execution ID' do
-        expect(handler.save_history).to eq('q00')
+      it 'returns the first processed query execution ID for each work group' do
+        expect(handler.save_history).to eq('primary' => 'q00')
+      end
+
+      context 'when there are multiple work groups' do
+        let :query_execution_ids do
+          {
+            'primary' => Array.new(11) { |i| format('q%02x', i) },
+            'secondary' => Array.new(11) { |i| format('q%02x', i + 32) },
+          }
+        end
+
+        let :work_groups do
+          [
+            {name: 'primary'},
+            {name: 'secondary'},
+          ]
+        end
+
+        it 'lists the work groups' do
+          handler.save_history
+          expect(athena_client).to have_received(:list_work_groups)
+        end
+
+        it 'loads the history from each work group' do
+          handler.save_history
+          expect(athena_client).to have_received(:list_query_executions).with(hash_including(work_group: 'primary')).at_least(:once)
+          expect(athena_client).to have_received(:list_query_executions).with(hash_including(work_group: 'secondary')).at_least(:once)
+        end
+
+        it 'stores the history for each work group' do
+          handler.save_history
+          expect(saved_executions).to include(
+            hash_including('query_execution_id' => 'q00'),
+            hash_including('query_execution_id' => 'q01'),
+            hash_including('query_execution_id' => 'q20'),
+            hash_including('query_execution_id' => 'q21'),
+          )
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/work_group=primary/q00.json.gz'))
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/work_group=secondary/q20.json.gz'))
+        end
+
+        it 'logs when it starts processing a work group' do
+          handler.save_history
+          expect(logger).to have_received(:debug).with('Loading query execution history for work group "primary"')
+          expect(logger).to have_received(:debug).with('Loading query execution history for work group "secondary"')
+        end
       end
 
       context 'when no history URI has been specified' do
@@ -246,19 +303,23 @@ module Athenai
 
       context 'when there are more than 50 query executions' do
         let :query_execution_ids do
-          Array.new(121) { |i| format('q%02x', i) }
+          super().merge(
+            'primary' => Array.new(121) { |i| format('q%02x', i) },
+          )
         end
 
         it 'looks up the query executions 50 at a time' do
           handler.save_history
-          expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids.take(50))
-          expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids.drop(50).take(50))
-          expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids.drop(100))
+          expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids['primary'].take(50))
+          expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids['primary'].drop(50).take(50))
+          expect(athena_client).to have_received(:batch_get_query_execution).with(query_execution_ids: query_execution_ids['primary'].drop(100))
         end
 
         context 'and the number is evenly divisible by 50' do
           let :query_execution_ids do
-            Array.new(100) { |i| format('q%02x', i) }
+            super().merge(
+              'primary' => Array.new(100) { |i| format('q%02x', i) },
+            )
           end
 
           it 'does not make an empty lookup call' do
@@ -270,21 +331,23 @@ module Athenai
 
       context 'when there are more query executions than the batch size' do
         let :query_execution_ids do
-          Array.new(211) { |i| format('q%02x', i) }
+          super().merge(
+            'primary' => Array.new(211) { |i| format('q%02x', i) },
+          )
         end
 
         it 'stores the query executions one batch at a time' do
           handler.save_history
-          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/q00.json.gz'))
-          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/q64.json.gz'))
-          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/qc8.json.gz'))
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/work_group=primary/q00.json.gz'))
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/work_group=primary/q64.json.gz'))
+          expect(s3_client).to have_received(:put_object).with(hash_including(key: 'some/prefix/region=us-stubbed-1/month=2018-12-01/work_group=primary/qc8.json.gz'))
           expect(saved_executions.size).to eq(211)
         end
       end
 
       context 'when there are no query executions' do
         let :query_execution_ids do
-          []
+          {}
         end
 
         it 'does not store any data on S3' do
@@ -292,8 +355,8 @@ module Athenai
           expect(s3_client).to_not have_received(:put_object)
         end
 
-        it 'returns nil' do
-          expect(handler.save_history).to be_nil
+        it 'returns an empty hash' do
+          expect(handler.save_history).to be_empty
         end
       end
 
@@ -303,7 +366,12 @@ module Athenai
         end
 
         let :state_contents do
-          {'last_query_execution_id' => 'q03'}
+          {
+            'work_groups' => {
+              'primary' => {'last_query_execution_id' => 'q03'},
+              'secondary' => {'last_query_execution_id' => 'q09'},
+            },
+          }
         end
 
         it 'looks up the region for the history URIs and creates an S3 client for that region' do
@@ -327,12 +395,16 @@ module Athenai
 
         it 'logs when it finds the last query execution ID' do
           handler.save_history
-          expect(logger).to have_received(:info).with('Found the last previously processed query execution ID')
+          expect(logger).to have_received(:info).with('Found the last previously processed query execution ID for work group "primary"')
         end
 
-        it 'stores the first query execution ID in an object at the specified URI' do
+        it 'stores the first query execution IDs per work group in an object at the specified URI' do
           handler.save_history
-          expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: JSON.dump('last_query_execution_id' => 'q00'))
+          expected_body = JSON.dump('work_groups' => {
+            'primary' => {'last_query_execution_id' => 'q00'},
+            'secondary' => {'last_query_execution_id' => 'q09'},
+          })
+          expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: expected_body)
         end
 
         it 'logs when it loads the state' do
@@ -344,7 +416,33 @@ module Athenai
         it 'logs when it stores the state' do
           handler.save_history
           expect(logger).to have_received(:debug).with('Saving state to s3://state/some/other/prefix/key.json')
-          expect(logger).to have_received(:info).with('Saved first processed query execution ID: "q00"')
+          expect(logger).to have_received(:info).with('Saved first processed query execution ID for work group "primary": "q00"')
+        end
+
+        context 'and the state contents are from before work groups were released' do
+          let :state_contents do
+            {'last_query_execution_id' => 'q03'}
+          end
+
+          it 'interprets the state as if it contains the state for only the primary work group' do
+            handler.save_history
+            expect(saved_executions).to include(
+              hash_including('query_execution_id' => 'q00'),
+              hash_including('query_execution_id' => 'q01'),
+              hash_including('query_execution_id' => 'q02'),
+            )
+            expect(saved_executions).to_not include(
+              hash_including('query_execution_id' => 'q03'),
+            )
+          end
+
+          it 'saves the new state in the new format' do
+            handler.save_history
+            expected_body = JSON.dump('work_groups' => {
+              'primary' => {'last_query_execution_id' => 'q00'},
+            })
+            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: expected_body)
+          end
         end
 
         context 'and the state key does not exist' do
@@ -359,7 +457,8 @@ module Athenai
 
           it 'still stores the first query execution ID' do
             handler.save_history
-            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: JSON.dump('last_query_execution_id' => 'q00'))
+            body = JSON.dump('work_groups' => {'primary' => {'last_query_execution_id' => 'q00'}})
+            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: body)
           end
 
           it 'logs that it did not find any state' do
@@ -370,22 +469,38 @@ module Athenai
 
         context 'and the state contains other information than the last query execution ID' do
           let :state_contents do
-            {'last_query_execution_id' => 'q03', 'something' => 'else'}
+            {
+              'work_groups' => {
+                'primary' => {
+                  'last_query_execution_id' => 'q03',
+                }
+              },
+              'something' => 'else',
+            }
           end
 
           it 'retains that data when it saves the state back' do
             handler.save_history
-            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: JSON.dump('last_query_execution_id' => 'q00', 'something' => 'else'))
+            body = JSON.dump('work_groups' => {'primary' => {'last_query_execution_id' => 'q00'}}, 'something' => 'else')
+            expect(s3_client).to have_received(:put_object).with(bucket: 'state', key: 'some/other/prefix/key.json', body: body)
           end
         end
 
         context 'and there are more query executions than the batch size' do
           let :state_contents do
-            {'last_query_execution_id' => 'qff'}
+            {
+              'work_groups' => {
+                'primary' => {
+                  'last_query_execution_id' => 'qff',
+                }
+              },
+            }
           end
 
           let :query_execution_ids do
-            Array.new(211) { |i| format('q%02x', i) }
+            super().merge(
+              'primary' => Array.new(211) { |i| format('q%02x', i) },
+            )
           end
 
           it 'only stores the state once' do
@@ -410,13 +525,22 @@ module Athenai
       context 'when an API call raises a throttling error' do
         let :athena_client do
           super().tap do |ac|
-            list_attempts = 0
-            allow(ac).to receive(:list_query_executions) do
-              list_attempts += 1
-              if list_attempts < 8
+            list_groups_attempts = 0
+            allow(ac).to receive(:list_work_groups) do
+              list_groups_attempts += 1
+              if list_groups_attempts < 5
                 raise Aws::Athena::Errors::ThrottlingException.new(nil, nil)
               else
-                ac.stub_data(:list_query_executions, query_execution_ids: query_execution_ids)
+                ac.stub_data(:list_work_groups, work_groups: work_groups)
+              end
+            end
+            list_executions_attempts = 0
+            allow(ac).to receive(:list_query_executions) do
+              list_executions_attempts += 1
+              if list_executions_attempts < 8
+                raise Aws::Athena::Errors::ThrottlingException.new(nil, nil)
+              else
+                ac.stub_data(:list_query_executions, query_execution_ids: query_execution_ids['primary'])
               end
             end
             get_attempts = 0
@@ -433,6 +557,7 @@ module Athenai
 
         it 'tries again' do
           handler.save_history
+          expect(athena_client).to have_received(:list_work_groups).exactly(5).times
           expect(athena_client).to have_received(:list_query_executions).exactly(8).times
           expect(athena_client).to have_received(:batch_get_query_execution).exactly(3).times
         end
@@ -443,7 +568,7 @@ module Athenai
             sleep_durations << n
           end
           handler.save_history
-          expect(sleep_durations).to eq([1, 2, 4, 8, 16, 16, 16, 1, 2])
+          expect(sleep_durations).to eq([1, 2, 4, 8, 1, 2, 4, 8, 16, 16, 16, 1, 2])
         end
       end
 
